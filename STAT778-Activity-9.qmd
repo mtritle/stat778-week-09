@@ -1,0 +1,351 @@
+---
+title: "STAT778 Activity 9"
+author: "Michael Tritle"
+format: html
+---
+
+## Activity 2
+
+### Weibull Generation by the Inverse CDF Method
+
+Let $U \sim \mathrm{Uniform}(0,1)$. Using the Weibull CDF,
+
+$F(x; k, \lambda) = 1 - e^{-(x/\lambda)^k}, \qquad x \geq 0,$
+
+set
+
+$U = F(X) = 1 - e^{-(X/\lambda)^k}.$
+
+Then
+
+$1-U = e^{-(X/\lambda)^k},$
+
+$\log(1-U) = -(X/\lambda)^k,$
+
+$-\log(1-U) = (X/\lambda)^k,$
+
+$X = \lambda \big(-\log(1-U)\big)^{1/k}.$
+
+Since $1-U \sim \mathrm{Uniform}(0,1)$ as well, this is equivalently
+
+$X = \lambda (-\log U)^{1/k}.$
+
+The following R function generates samples from a Weibull distribution via cdf inversion
+
+```{r}
+rweibull <- function(n, k, lambda) {
+  if(n <= 0 || length(n) != 1) {
+    stop("n must be a positive integer.")
+  }
+  if(k <= 0 || lambda <= 0) {
+    stop("k and lambda must both be positive.")
+  }
+  
+  u <- runif(n)
+  x <- lambda * (-log(u))^(1 / k)
+  x
+}
+```
+
+
+## Activity 3
+
+### Gompertz Generation by Generalized Rejection Sampling
+
+We want to sample from
+
+$f(x;\eta,\sigma) = \eta \sigma \exp\{\eta + \sigma x - \eta e^{\sigma x}\}, \qquad x \geq 0,$
+
+with $\eta > 0$ and $\sigma > 0$.
+
+We choose an exponential proposal
+
+$g_r(x) = r e^{-rx}, \qquad x \geq 0,$
+
+where $r > 0$ is a tuning parameter.
+
+To use generalized rejection sampling, we need
+
+$f(x) \leq c_r g_r(x)$
+
+for all $x \geq 0$. Consider
+
+$\log\!\left(\frac{f(x)}{g_r(x)}\right)
+= \log\!\left(\frac{\eta \sigma}{r}\right) + \eta + (\sigma + r)x - \eta e^{\sigma x}.$
+
+Differentiate with respect to $x$:
+
+$\frac{d}{dx}\log\!\left(\frac{f(x)}{g_r(x)}\right)
+= (\sigma + r) - \eta \sigma e^{\sigma x}.$
+
+So the maximizer is
+
+$x_r^\star = \max\left\{0,\; \frac{1}{\sigma}\log\!\left(\frac{\sigma + r}{\eta \sigma}\right)\right\}.$
+
+Hence
+
+$c_r = \frac{f(x_r^\star)}{g_r(x_r^\star)}.$
+
+The rejection sampler is then:
+
+1. Generate $Y \sim \mathrm{Exp}(r)$ and $U \sim \mathrm{Uniform}(0,1)$.
+2. Accept $X = Y$ if
+
+$U \leq \frac{f(Y)}{c_r g_r(Y)}.$
+
+Otherwise reject and repeat.
+
+```{r}
+logf_gompertz <- function(x, eta, sigma) {
+  log(eta) + log(sigma) + eta + sigma * x - eta * exp(sigma * x)
+}
+
+logg_exp <- function(x, rate) {
+  log(rate) - rate * x
+}
+
+logc_from_t <- function(t, eta) {
+  xs <- max(0, log((1 + t) / eta))
+  log(eta / t) + eta + (1 + t) * xs - eta * exp(xs)
+}
+
+tune_rate <- function(eta, sigma) {
+  opt <- optimize(
+    f = function(t) logc_from_t(t, eta),
+    interval = c(1e-6, max(20, 10 * eta))
+  )
+  sigma * opt$minimum
+}
+
+rgompertz_reject <- function(n, eta, sigma, rate = NULL, return_stats = FALSE) {
+  if(length(n) != 1 || n <= 0 || n != as.integer(n)) {
+    stop("n must be a positive integer.")
+  }
+  if(eta <= 0 || sigma <= 0) {
+    stop("eta and sigma must be positive.")
+  }
+
+  if(is.null(rate)) {
+    rate <- tune_rate(eta, sigma)
+  }
+
+  x_star <- max(0, log((sigma + rate) / (eta * sigma)) / sigma)
+  logc <- logf_gompertz(x_star, eta, sigma) - logg_exp(x_star, rate)
+  cval <- exp(logc)
+
+  out <- numeric(n)
+  accepted <- 0
+  proposals <- 0
+  uniforms_used <- 0
+
+  while(accepted < n) {
+    u1 <- runif(1)
+    y <- -log(u1) / rate
+    uniforms_used <- uniforms_used + 1
+
+    u2 <- runif(1)
+    uniforms_used <- uniforms_used + 1
+    proposals <- proposals + 1
+
+    log_alpha <- logf_gompertz(y, eta, sigma) - logc - logg_exp(y, rate)
+
+    if(log(u2) <= log_alpha) {
+      accepted <- accepted + 1
+      out[accepted] <- y
+    }
+  }
+
+  if(return_stats) {
+    return(list(
+      x = out,
+      rate = rate,
+      c = cval,
+      acceptance_prob = 1 / cval,
+      proposals = proposals,
+      accepted = accepted,
+      uniforms_used = uniforms_used,
+      uniforms_per_accept = uniforms_used / accepted
+    ))
+  }
+
+  out
+}
+```
+
+```{r}
+set.seed(778)
+
+params <- data.frame(
+  eta   = c(0.5, 0.5, 1, 2),
+  sigma = c(0.5, 1, 1, 1.5)
+)
+
+results <- vector("list", nrow(params))
+
+for(i in seq_len(nrow(params))) {
+  sim <- rgompertz_reject(
+    n = 10000,
+    eta = params$eta[i],
+    sigma = params$sigma[i],
+    return_stats = TRUE
+  )
+
+  results[[i]] <- data.frame(
+    eta = params$eta[i],
+    sigma = params$sigma[i],
+    variance_estimate = var(sim$x),
+    tuned_rate = sim$rate,
+    theoretical_acceptance = sim$acceptance_prob,
+    empirical_acceptance = sim$accepted / sim$proposals,
+    uniforms_per_accept = sim$uniforms_per_accept
+  )
+}
+
+do.call(rbind, results)
+```
+
+Using the generalized rejection sampler, I generated $N=10{,}000$ Gompertz random deviates for several choices of $(\eta,\sigma)$ and estimated the variance in each case.
+
+| $\eta$ | $\sigma$ | Variance Estimate | Tuned Rate | Theoretical Acceptance | Empirical Acceptance | Uniforms per Accept |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.5 | 0.5 | 1.33768671 | 0.3928043 | 0.5854037 | 0.5848637 | 3.4196 |
+| 0.5 | 1.0 | 0.32835543 | 0.7856085 | 0.5854037 | 0.5866479 | 3.4092 |
+| 1.0 | 1.0 | 0.18181704 | 1.2399820 | 0.7037060 | 0.7022472 | 2.8480 |
+| 2.0 | 1.5 | 0.03599115 | 3.2556920 | 0.8118233 | 0.8117542 | 2.4638 |
+
+Observations: The empirical acceptance probabilities are very close to the theoretical acceptance probabilities, which indicates that the rejection sampler is implemented correctly.
+
+The efficiency of the sampler is determined by the acceptance probability. If the acceptance probability is $1/c$, then the expected number of proposals per accepted draw is $c$. Since each proposal uses two uniforms, one to generate the exponential proposal and one for the accept/reject step, the expected number of uniforms per accepted draw is
+
+$2c = \frac{2}{\text{acceptance probability}}.$
+
+This agrees with the simulation output. For example, when the acceptance probability is about $0.5854$, the expected number of uniforms per accepted draw is
+
+$\frac{2}{0.5854} \approx 3.42,$
+
+which matches the observed values.
+
+To determine whether the efficiency depends on the parameters, compare the first two rows. These use the same $\eta=0.5$ but different $\sigma$ values, and the theoretical acceptance probability is identical in both cases. This shows that the efficiency does not depend on $\sigma$.
+
+However, the acceptance probability changes as $\eta$ changes, so the efficiency does depend on $\eta$. In particular, larger $\eta$ led to higher acceptance probabilities and therefore fewer uniforms needed per accepted draw.
+
+Thus, for the tuned generalized rejection sampler, the efficiency depends on $\eta$ but not on $\sigma$.
+
+## Activity 4
+
+For the ratio-of-uniforms method, use the unnormalized density
+
+$h(x;\mu,\kappa) = e^{\kappa \cos(x-\mu)}, \qquad x \in (\mu-\pi,\mu+\pi].$
+
+Then
+
+$C_h = \{(u,v): 0 < u \le \sqrt{h(v/u;\mu,\kappa)}\}.$
+
+Since $\max_x \sqrt{h(x;\mu,\kappa)} = e^{\kappa/2}$, we take
+
+$x_u = e^{\kappa/2}.$
+
+Because $\mu \in [\pi,2\pi]$, the support satisfies $x \ge 0$, so $v = ux \ge 0$, and a rectangle is obtained with
+
+$C_1 = [0,x_u] \times [0,y_u],$
+
+where
+
+$y_u = \max_{x \in [\mu-\pi,\mu+\pi]} x e^{(\kappa/2)\cos(x-\mu)}.$
+
+For the banded region, write
+
+$v = ux = \mu u + u(x-\mu),$
+
+so
+
+$|v-\mu u| \le |x-\mu| e^{(\kappa/2)\cos(x-\mu)}.$
+
+Thus we may take
+
+$\beta_1 = \mu, \qquad
+\beta_0 = \max_{t \in [0,\pi]} t e^{(\kappa/2)\cos t},$
+
+which gives the band
+
+$C_2 = \{(u,v): 0 < u \le x_u,\ \beta_1 u - \beta_0 \le v \le \beta_1 u + \beta_0\}.$
+
+The sampler proposes uniformly from either $C_1$ or $C_2$, accepts when $(u,v) \in C_h$, and returns $x=v/u$. The attribute `efficiency` is the realized acceptance proportion.
+
+```{r}
+rvonmises <- function(n, mu, kappa, type = 1) {
+  if (length(n) != 1 || n <= 0 || n != as.integer(n)) {
+    stop("n must be a positive integer.")
+  }
+  if (length(mu) != 1 || mu < pi || mu > 2 * pi) {
+    stop("mu must satisfy pi <= mu <= 2*pi.")
+  }
+  if (length(kappa) != 1 || kappa <= 0) {
+    stop("kappa must be positive.")
+  }
+  if (!(type %in% c(1, 2))) {
+    stop("type must be either 1 or 2.")
+  }
+
+  h <- function(x) {
+    exp(kappa * cos(x - mu))
+  }
+
+  x_low <- mu - pi
+  x_high <- mu + pi
+  x_u <- exp(kappa / 2)
+
+  if (type == 1) {
+    y_l <- 0
+    y_u <- -optimize(
+      f = function(x) -x * exp((kappa / 2) * cos(x - mu)),
+      interval = c(x_low, x_high)
+    )$objective
+  }
+
+  if (type == 2) {
+    beta_1 <- mu
+    beta_0 <- -optimize(
+      f = function(t) -t * exp((kappa / 2) * cos(t)),
+      interval = c(0, pi)
+    )$objective
+  }
+
+  out <- numeric(n)
+  accepted <- 0
+  proposals <- 0
+
+  while (accepted < n) {
+    if (type == 1) {
+      u <- runif(1, 0, x_u)
+      v <- runif(1, y_l, y_u)
+    } else {
+      u <- runif(1, 0, x_u)
+      v <- beta_1 * u + runif(1, -beta_0, beta_0)
+    }
+
+    proposals <- proposals + 1
+    x <- v / u
+
+    if (x > x_low && x <= x_high && u^2 <= h(x)) {
+      accepted <- accepted + 1
+      out[accepted] <- x
+    }
+  }
+
+  attr(out, "efficiency") <- accepted / proposals
+  out
+}
+```
+
+2 examples
+
+```{r}
+set.seed(778)
+
+x1 <- rvonmises(n = 10000, mu = 1.5 * pi, kappa = 2, type = 1)
+attr(x1, "efficiency")
+
+x2 <- rvonmises(n = 10000, mu = 1.5 * pi, kappa = 2, type = 2)
+attr(x2, "efficiency")
+```
